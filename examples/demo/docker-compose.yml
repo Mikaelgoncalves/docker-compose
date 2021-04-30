@@ -1,0 +1,63 @@
+version: "3.7"
+services:
+  otel-collector:
+    container_name: otel-collector
+    image: otel/opentelemetry-collector:0.24.0
+    command: ["--config=/etc/otel-collector-config.yml"]
+    volumes:
+      - /vagrant/data-prepper/data/otel-collector-config.yml:/etc/otel-collector-config.yml
+    ports:
+      - "4317:4317"
+    depends_on:
+      - zipkin
+    networks:
+      - my_network
+  zipkin:
+    container_name: zipkin
+    image: openzipkin/zipkin
+    ports:
+      - "9411:9411"
+    networks:
+      - my_network
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus
+    links:
+      - alertmanager
+    ports:
+      - "9090:9090"
+    volumes:
+      - /vagrant/data-prepper/data:/etc/prometheus
+      - /vagrant/data-prepper/data/prom_data:/prometheus
+    networks:
+      - my_network
+  alertmanager:
+    container_name: alertmanager
+    image: prom/alertmanager
+    command: --config.file=/etc/prometheus/alertmanager.yml
+    ports:
+      - "9093:9093"
+    volumes:
+      - /vagrant/data-prepper/data:/etc/prometheus
+    networks:
+      - my_network
+  jenkins:
+    image: jenkinsci/blueocean
+    container_name: jenkins
+    ports:
+      - 8080:8080
+    expose:
+      - "8080"
+    networks:
+      - my_network 
+  grafana:
+    container_name: grafana
+    image: grafana/grafana
+    ports:
+      - 3000:3000
+    expose:
+      - "3000"
+    networks:
+      - my_network 
+networks:
+  my_network:

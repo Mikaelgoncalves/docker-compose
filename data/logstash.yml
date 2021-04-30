@@ -1,0 +1,19 @@
+input {
+  http {
+  }
+}
+filter {
+    mutate {
+        remove_field => [ "[build][artifacts]" ]
+    }
+}
+output {
+  elasticsearch {
+    cacert => ["/usr/share/logstash/root-ca.pem"]
+    hosts => ["https://node-0.example.com:9200"]
+    user => "admin"
+    password => "admin"
+    http_compression => true
+    index => "jenkins-%{+yyyy.MM.dd}"
+  }
+}

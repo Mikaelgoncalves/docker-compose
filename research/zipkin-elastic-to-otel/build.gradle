@@ -1,0 +1,39 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+ext {
+    es_version = System.getProperty("es.version", "${versionMap.es_version}")
+}
+
+group 'com.amazon'
+version '0.1-beta'
+
+sourceCompatibility = 1.8
+
+repositories {
+    mavenCentral()
+}
+
+application {
+    mainClass = 'com.amazon.dataprepper.research.zipkin.ZipkinElasticToOtel'
+}
+
+run {
+    if (System.getProperty("test") != null) {
+        systemProperty "test", System.getProperty("test")
+    }
+}
+
+dependencies {
+    compile project(':data-prepper-plugins:elasticsearch')
+    compile project(':data-prepper-plugins:otel-trace-source')
+    compile project(':data-prepper-plugins:otel-trace-raw-prepper')
+    implementation "org.apache.commons:commons-lang3:3.11"
+    implementation "com.linecorp.armeria:armeria:1.0.0"
+    implementation "com.linecorp.armeria:armeria-grpc:1.0.0"
+    implementation "org.elasticsearch.client:elasticsearch-rest-high-level-client:${es_version}"
+    implementation "com.fasterxml.jackson.core:jackson-databind:2.12.1"
+    implementation "io.opentelemetry:opentelemetry-proto:${versionMap.opentelemetry_proto}"
+}

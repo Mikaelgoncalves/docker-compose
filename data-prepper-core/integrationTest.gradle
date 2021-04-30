@@ -1,0 +1,218 @@
+buildscript {
+    repositories {
+        jcenter()
+    }
+    dependencies {
+        classpath 'com.bmuschko:gradle-docker-plugin:6.6.1'
+    }
+}
+
+apply plugin: 'com.bmuschko.docker-remote-api'
+
+import com.bmuschko.gradle.docker.tasks.container.*
+import com.bmuschko.gradle.docker.tasks.image.*
+import com.bmuschko.gradle.docker.tasks.network.*
+
+sourceSets {
+    integrationTest {
+        java {
+            compileClasspath += main.output + test.output
+            runtimeClasspath += main.output + test.output
+            srcDir file('src/integrationTest/java')
+        }
+        resources.srcDir file('src/integrationTest/resources')
+    }
+}
+
+dependencies {
+    integrationTestCompile("junit:junit:4.13")
+    integrationTestCompile project(':data-prepper-plugins:elasticsearch')
+    integrationTestCompile project(':data-prepper-plugins:otel-trace-group-prepper')
+    integrationTestImplementation "org.awaitility:awaitility:4.0.3"
+    integrationTestImplementation "io.opentelemetry:opentelemetry-proto:${versionMap.opentelemetry_proto}"
+    integrationTestImplementation 'com.google.protobuf:protobuf-java-util:3.13.0'
+    integrationTestImplementation "com.linecorp.armeria:armeria:1.0.0"
+    integrationTestImplementation "com.linecorp.armeria:armeria-grpc:1.0.0"
+    integrationTestImplementation "org.elasticsearch.client:elasticsearch-rest-high-level-client:${versionMap.es_version}"
+    integrationTestImplementation "com.fasterxml.jackson.core:jackson-databind:2.12.1"
+}
+
+/**
+ * End-to-end test docker network
+ */
+task createDataPrepperNetwork(type: DockerCreateNetwork) {
+    networkName = "data_prepper_network"
+}
+
+task removeDataPrepperNetwork(type: DockerRemoveNetwork) {
+    dependsOn createDataPrepperNetwork
+    networkId = createDataPrepperNetwork.getNetworkId()
+}
+
+def RAW_SPAN_PIPELINE_YAML = "raw-span-e2e-pipeline.yml"
+def SERVICE_MAP_PIPELINE_YAML = "service-map-e2e-pipeline.yml"
+
+/**
+ * DataPrepper Docker tasks
+ */
+task createDataPrepperDockerFile(type: Dockerfile) {
+    dependsOn jar
+    destFile = project.file('build/docker/Dockerfile')
+    from("adoptopenjdk/openjdk14:jre-14.0.1_7-alpine")
+    exposePort(21890)
+    exposePort(4900)
+    workingDir("/app")
+    copyFile("build/libs/${jar.archiveName}", "/app/data-prepper.jar")
+    copyFile("src/integrationTest/resources/${RAW_SPAN_PIPELINE_YAML}", "/app/${RAW_SPAN_PIPELINE_YAML}")
+    copyFile("src/integrationTest/resources/${SERVICE_MAP_PIPELINE_YAML}", "/app/${SERVICE_MAP_PIPELINE_YAML}")
+    copyFile("src/integrationTest/resources/data_prepper.yml", "/app/data_prepper.yml")
+    defaultCommand("java", "-jar", "data-prepper.jar", "/app/${RAW_SPAN_PIPELINE_YAML}", "/app/data_prepper.yml")
+}
+
+task buildDataPrepperDockerImage(type: DockerBuildImage) {
+    dependsOn createDataPrepperDockerFile
+    inputDir  = file(".")
+    dockerFile  = file("build/docker/Dockerfile")
+    images.add("integ-test-pipeline-image")
+}
+
+def createDataPrepperDockerContainer(final String taskBaseName, final String dataPrepperName, final int grpcPort,
+                                     final int serverPort, final String pipelineConfigYAML) {
+    return tasks.create("create${taskBaseName}", DockerCreateContainer) {
+        dependsOn buildDataPrepperDockerImage
+        dependsOn createDataPrepperNetwork
+        containerName = dataPrepperName
+        hostConfig.portBindings = [String.format('%d:21890', grpcPort), String.format('%d:4900', serverPort)]
+        hostConfig.network = createDataPrepperNetwork.getNetworkName()
+        cmd = ["java", "-jar", "data-prepper.jar", pipelineConfigYAML, "/app/data_prepper.yml"]
+        targetImageId buildDataPrepperDockerImage.getImageId()
+    }
+}
+
+def startDataPrepperDockerContainer(final DockerCreateContainer createDataPrepperDockerContainerTask) {
+    return tasks.create("start${createDataPrepperDockerContainerTask.getName()}", DockerStartContainer) {
+        dependsOn createDataPrepperDockerContainerTask
+        targetContainerId createDataPrepperDockerContainerTask.getContainerId()
+    }
+}
+
+def stopDataPrepperDockerContainer(final DockerStartContainer startDataPrepperDockerContainerTask) {
+    return tasks.create("stop${startDataPrepperDockerContainerTask.getName()}", DockerStopContainer) {
+        targetContainerId startDataPrepperDockerContainerTask.getContainerId()
+    }
+}
+
+def removeDataPrepperDockerContainer(final DockerStopContainer stopDataPrepperDockerContainerTask) {
+    return tasks.create("remove${stopDataPrepperDockerContainerTask.getName()}", DockerRemoveContainer) {
+        targetContainerId stopDataPrepperDockerContainerTask.getContainerId()
+    }
+}
+
+/**
+ * ODFE Docker tasks
+ */
+task pullOdfeDockerImage(type: DockerPullImage) {
+    image = 'amazon/opendistro-for-elasticsearch:1.9.0'
+}
+
+task createOdfeDockerContainer(type: DockerCreateContainer) {
+    dependsOn createDataPrepperNetwork
+    dependsOn pullOdfeDockerImage
+    targetImageId pullOdfeDockerImage.image
+    containerName = "node-0.example.com"
+    hostConfig.portBindings = ['9200:9200', '9600:9600']
+    hostConfig.autoRemove = true
+    hostConfig.network = createDataPrepperNetwork.getNetworkName()
+    envVars = ['discovery.type':'single-node']
+}
+
+task startOdfeDockerContainer(type: DockerStartContainer) {
+    dependsOn createOdfeDockerContainer
+    targetContainerId createOdfeDockerContainer.getContainerId()
+
+    doLast {
+        sleep(90*1000)
+    }
+}
+
+task stopOdfeDockerContainer(type: DockerStopContainer) {
+    targetContainerId createOdfeDockerContainer.getContainerId()
+}
+
+/**
+ * End to end test. Spins up ODFE and DataPrepper docker containers, then runs the integ test
+ * Stops the docker containers when finished
+ */
+task rawSpanEndToEndTest(type: Test) {
+    dependsOn build
+    dependsOn startOdfeDockerContainer
+    def createDataPrepper1Task = createDataPrepperDockerContainer(
+            "rawSpanDataPrepper1", "data-prepper1", 21890, 4900, "/app/${RAW_SPAN_PIPELINE_YAML}")
+    def createDataPrepper2Task = createDataPrepperDockerContainer(
+            "rawSpanDataPrepper2", "data-prepper2", 21891, 4901, "/app/${RAW_SPAN_PIPELINE_YAML}")
+    def startDataPrepper1Task = startDataPrepperDockerContainer(createDataPrepper1Task as DockerCreateContainer)
+    def startDataPrepper2Task = startDataPrepperDockerContainer(createDataPrepper2Task as DockerCreateContainer)
+    dependsOn startDataPrepper1Task
+    dependsOn startDataPrepper2Task
+    startDataPrepper1Task.mustRunAfter 'startOdfeDockerContainer'
+    startDataPrepper2Task.mustRunAfter 'startOdfeDockerContainer'
+    // wait for data-preppers to be ready
+    doFirst {
+        sleep(10*1000)
+    }
+
+    description = 'Runs the raw span integration tests.'
+    group = 'verification'
+    testClassesDirs = sourceSets.integrationTest.output.classesDirs
+    classpath = sourceSets.integrationTest.runtimeClasspath
+
+    filter {
+        includeTestsMatching "com.amazon.dataprepper.integration.EndToEndRawSpanTest*"
+    }
+
+    finalizedBy stopOdfeDockerContainer
+    def stopDataPrepper1Task = stopDataPrepperDockerContainer(startDataPrepper1Task as DockerStartContainer)
+    def stopDataPrepper2Task = stopDataPrepperDockerContainer(startDataPrepper2Task as DockerStartContainer)
+    finalizedBy stopDataPrepper1Task
+    finalizedBy stopDataPrepper2Task
+    finalizedBy removeDataPrepperDockerContainer(stopDataPrepper1Task as DockerStopContainer)
+    finalizedBy removeDataPrepperDockerContainer(stopDataPrepper2Task as DockerStopContainer)
+    finalizedBy removeDataPrepperNetwork
+}
+
+task serviceMapEndToEndTest(type: Test) {
+    dependsOn build
+    dependsOn startOdfeDockerContainer
+    def createDataPrepper1Task = createDataPrepperDockerContainer(
+            "serviceMapDataPrepper1", "data-prepper1", 21890, 4900, "/app/${SERVICE_MAP_PIPELINE_YAML}")
+    def createDataPrepper2Task = createDataPrepperDockerContainer(
+            "serviceMapDataPrepper2", "data-prepper2", 21891, 4901, "/app/${SERVICE_MAP_PIPELINE_YAML}")
+    def startDataPrepper1Task = startDataPrepperDockerContainer(createDataPrepper1Task as DockerCreateContainer)
+    def startDataPrepper2Task = startDataPrepperDockerContainer(createDataPrepper2Task as DockerCreateContainer)
+    dependsOn startDataPrepper1Task
+    dependsOn startDataPrepper2Task
+    startDataPrepper1Task.mustRunAfter 'startOdfeDockerContainer'
+    startDataPrepper2Task.mustRunAfter 'startOdfeDockerContainer'
+    // wait for data-preppers to be ready
+    doFirst {
+        sleep(10*1000)
+    }
+
+    description = 'Runs the service-map integration tests.'
+    group = 'verification'
+    testClassesDirs = sourceSets.integrationTest.output.classesDirs
+    classpath = sourceSets.integrationTest.runtimeClasspath
+
+    filter {
+        includeTestsMatching "com.amazon.dataprepper.integration.EndToEndServiceMapTest*"
+    }
+
+    finalizedBy stopOdfeDockerContainer
+    def stopDataPrepper1Task = stopDataPrepperDockerContainer(startDataPrepper1Task as DockerStartContainer)
+    def stopDataPrepper2Task = stopDataPrepperDockerContainer(startDataPrepper2Task as DockerStartContainer)
+    finalizedBy stopDataPrepper1Task
+    finalizedBy stopDataPrepper2Task
+    finalizedBy removeDataPrepperDockerContainer(stopDataPrepper1Task as DockerStopContainer)
+    finalizedBy removeDataPrepperDockerContainer(stopDataPrepper2Task as DockerStopContainer)
+    finalizedBy removeDataPrepperNetwork
+}

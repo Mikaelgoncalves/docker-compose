@@ -1,0 +1,110 @@
+version: "3.7"
+services:
+  data-prepper:
+    restart: unless-stopped
+    container_name: data-prepper
+    image: amazon/opendistro-for-elasticsearch-data-prepper:latest
+    command: sh data-prepper-wait-for-odfe-and-start.sh
+    volumes:
+      - ./resources/data-prepper-wait-for-odfe-and-start.sh:/usr/share/data-prepper/data-prepper-wait-for-odfe-and-start.sh
+      - ../trace_analytics_no_ssl.yml:/usr/share/data-prepper/pipelines.yaml
+      - ../data-prepper-config.yaml:/usr/share/data-prepper/data-prepper-config.yaml
+      - ../demo/root-ca.pem:/usr/share/data-prepper/root-ca.pem
+    ports:
+      - "21890:21890"
+    networks:
+      - my_network
+    depends_on:
+      - opendistro-for-elasticsearch
+  opendistro-for-elasticsearch:
+    container_name: node-0.example.com
+    image: amazon/opendistro-for-elasticsearch:1.12.0
+    ports:
+      - '9200:9200'
+      - '9600:9600'
+    environment:
+      - discovery.type=single-node
+    networks:
+      - my_network
+  kibana:
+    build:
+      context: ../..
+      dockerfile: examples/kibana-trace-analytics/Dockerfile
+    container_name: odfe-kibana
+    ports:
+      - 5601:5601
+    expose:
+      - "5601"
+    environment:
+      ELASTICSEARCH_URL: https://node-0.example.com:9200
+      ELASTICSEARCH_HOSTS: https://node-0.example.com:9200
+    networks:
+      - my_network
+  otel-collector:
+    container_name: otel-collector
+    restart: unless-stopped
+    image: otel/opentelemetry-collector:0.24.0
+    command: ["--config=/etc/otel-collector-config.yml"]
+    volumes:
+      - ./opentelemetry-collector/otel-collector-config.yml:/etc/otel-collector-config.yml
+      - ../demo/demo-data-prepper.crt:/etc/demo-data-prepper.crt
+    ports:
+      - "4317:4317"
+    depends_on:
+      - data-prepper
+    networks:
+      - my_network
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus
+    links:
+      - alertmanager
+    ports:
+      - "9090:9090"
+    volumes:
+      - /vagrant/data-prepper/data:/etc/prometheus
+      - /vagrant/data-prepper/data/prom_data:/prometheus
+    networks:
+      - my_network
+  alertmanager:
+    container_name: alertmanager
+    image: prom/alertmanager
+    command: --config.file=/etc/prometheus/alertmanager.yml
+    ports:
+      - "9093:9093"
+    volumes:
+      - /vagrant/data-prepper/data:/etc/prometheus
+    networks:
+      - my_network
+  jenkins:
+    image: jenkinsci/blueocean
+    container_name: jenkins
+    ports:
+      - 8080:8080
+    expose:
+      - "8080"
+    networks:
+      - my_network 
+  grafana:
+    container_name: grafana
+    image: grafana/grafana
+    ports:
+      - 3000:3000
+    expose:
+      - "3000"
+    networks:
+      - my_network
+  logstash:
+    container_name: logstash
+    image: docker.elastic.co/logstash/logstash-oss:7.10.2
+    ports:
+      - 80:80
+    expose:
+      - "80"
+    volumes:
+      - /vagrant/data-prepper/data/logstash.yml:/usr/share/logstash/pipeline/logstash.yml
+      - ../demo/root-ca.pem:/usr/share/logstash/root-ca.pem
+    networks:
+      - my_network    
+networks:
+  my_network:

@@ -1,0 +1,25 @@
+apply from: file("build-resources.gradle")
+
+allprojects {
+    dependencies {
+        compile project(':data-prepper-core')
+    }
+}
+
+task endToEndTests {
+    // TODO add benchmark test and enable
+}
+
+task benchmarkTests {
+    // TODO add benchmark test and enable
+}
+
+task buildCore {
+    dependsOn ':data-prepper-core:build'
+}
+
+task releasePrerequisites {
+    dependsOn 'buildCore'
+    dependsOn 'endToEndTests'
+    dependsOn 'benchmarkTests'
+}

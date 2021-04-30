@@ -1,0 +1,36 @@
+plugins {
+    id 'java'
+}
+
+group 'com.amazon'
+version '0.1-beta'
+
+sourceCompatibility = 1.8
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testCompile group: 'junit', name: 'junit', version: '4.13.2'
+    compile project(':data-prepper-api')
+    compile project(':data-prepper-plugins:common')
+    implementation group: 'org.mapdb', name: 'mapdb', version: '3.0.8'
+    implementation group: 'org.jetbrains.kotlin', name: 'kotlin-stdlib', version: '1.4.32'
+    implementation group: 'org.jetbrains.kotlin', name: 'kotlin-stdlib-common', version: '1.4.32'
+
+    testCompile project(':data-prepper-plugins:common').sourceSets.test.output
+    testImplementation "org.hamcrest:hamcrest:2.2"
+}
+
+jacocoTestCoverageVerification {
+    dependsOn jacocoTestReport
+    violationRules {
+        rule { //in addition to core projects rule
+            limit {
+                minimum = 0.95 //Increase this to 0.90
+            }
+        }
+    }
+}
+
